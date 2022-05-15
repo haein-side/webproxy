@@ -2,7 +2,7 @@
 /*
  * tiny.c - A simple, iterative HTTP/1.0 Web server that uses the
  *     GET method to serve static and dynamic content.
- *
+ * HTTP 프로토콜: 클라이언트-서버 간 데이터를 주고 받는 응용 계층의 프로토콜
  * Updated 11/2019 droh
  *   - Fixed sprintf() aliasing issue in serve_static(), and clienterror().
  */
@@ -191,16 +191,24 @@ void get_filetype(char *filename, char *filetype) {
 
 void serve_dynamic(int fd, char *filename, char *cgiargs) { // fd: 클라이언트 식별자, filename: uri의 파일경로 (별칭), cgiargs: 쿼리스트링
     char buf[MAXLINE], *emptylist[] = {NULL};
+
     /* Return first part of HTTP response */
-    sprintf(buf, "HTTP/1.0 200 OK\r\n");
-    Rio_writen(fd, buf, strlen(buf));
-    sprintf(buf, "Server: Tiny Web Server\r\n");
-    Rio_writen(fd, buf, strlen(buf));
-    if (Fork() == 0) // 자식 생성 이 아래 내용은 각각 실행 자식만 조건문 안 실행
+    sprintf(buf, "HTTP/1.0 200 OK\r\n"); // 버퍼 뒤에 붙임
+    Rio_writen(fd, buf, strlen(buf)); // 버퍼에서 꺼내서 클라이언트 식별자 file에 써줌
+    sprintf(buf, "Server: Tiny Web Server\r\n"); 
+    Rio_writen(fd, buf, strlen(buf)); 
+
+    // 서버가 GET /cgi-bin/adder?15000&213 HTTP/1.1 과 같은 요청을 받은 후에
+
+    // 자식 프로세스 생성, 이 아래 내용은 각각 실행 자식만 조건문 안 실행
+    if (Fork() == 0) 
     /* Real server would set all CGI vars here */
     {
-        // 1이면 원래 있던거 지우고 다시 넣기
+        // 자식 프로세스는 CGI 환경변수 QUERY_STRING을 "15000&213"으로 설정해줌
+        // adder 프로그램은 런 타임에 리눅스 getenv()로 이 값을 참조 가능
         setenv("QUERY_STRING", cgiargs, 1); // a=1&b=1
+
+        // 1이면 원래 있던거 지우고 다시 넣기
         // 파일 복사하기
         // 표준 출력이 fd에 저장되게 만드는 듯
         // 원래는 STDOUT_FILENO -> 1 임. 표준 파일 식별자.
@@ -208,6 +216,8 @@ void serve_dynamic(int fd, char *filename, char *cgiargs) { // fd: 클라이언�
         // 자식은 자식의 표준 출력을 연결 파일 식별자로 재지정
         // 파일 네임의 실행 코드를 가지고 와서 실행,
         // 즉 자식 프로세스에는 기존 기능이 전부 없어지고 파일이 실행되는 것임.
+
+        // /cgi-bin/adder 프로그램을 자식의 컨텍스트에서 실행
         Execve(filename, emptylist, environ); /* Run CGI program */
     }
     Wait(NULL); // 자식 끝날때까지 기다림
