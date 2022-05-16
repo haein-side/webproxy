@@ -58,6 +58,7 @@ int main(int argc, char **argv) {
     /* 연결이 성공했다는 메세지를 위해 Getnameinfo를 호출하면서 hostname과 port가 채워짐 */
     Getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE, port, MAXLINE, 0); 
     // 소켓 주소 구조체를 대응되는 호스트와 서비스 이름 스트링으로 변환
+    // 내 컴퓨터 하나에서 요청해서 ip 주소는 같지만 포트 번호가 제각기 다름
     printf("Accepted connection from (%s, %s)\n", hostname, port);
 
     /* doit 함수를 실행 */
@@ -91,8 +92,8 @@ void doit(int fd) {
 
   /* Read request line and headers */
   /* 클라이언트가 rio로 보낸 request 라인과 헤더를 읽고 분석한다. */
-  Rio_readinitb(&rio, fd); // fd의 내용을 rio 구조체에 초기화. rio 안의 버퍼와 fd(서버의 connfd) 연결
-  Rio_readlineb(&rio, buf, MAXLINE); //  rio(==connfd)에 있는 string 한 줄(응답 라인)을 모두 buf로 옮김
+  Rio_readinitb(&rio, fd); // fd의 내용을 rio 구조체에 초기화. rio 안의 내부 버퍼와 fd(서버의 connfd) 연결
+  Rio_readlineb(&rio, buf, MAXLINE); //  rio(==connfd)에 있는 string 한 줄(응답 라인)을 읽고 buf로 옮김
 
   /* 사용자 버퍼인 buf에 connfd의 값들이 들어간 것 */
 
@@ -107,50 +108,68 @@ void doit(int fd) {
   }
 
   /* 요청 라인을 뺀 나머지 요청 헤더들을 프린트 */
+  // 위에서 요청 라인을 한 줄 읽어서 포인터가 그 다음 요청 헤더들을 가리킴
+  // 포인터가 컨텐츠를 가리키도록 요청 헤더들을 모두 읽어줌
   read_requesthdrs(&rio);
 
   /* 컨텐츠의 유형(정적, 동적)을 파악한 후 각각의 서버에 보냄 */
   /* Parse URI from GET request */
   is_static = parse_uri(uri, filename, cgiargs);  // 클라이언트 요청 라인에서 받아온 uri를 이용해 정적/동적 컨텐츠를 구분 (정적이면 1)
-  if (stat(filename, &sbuf) < 0) { // 파일의 상태 및 정보를 읽는 함수 -> sbuf에 파일 정보 값 들어있음
+  
+  /* stat(file, *buffer) : file의 상태를 buffer에 넘긴다. */
+  /* 여기서 filename : 클라이언트가 요청한 서버의 컨텐츠 디렉토리 및 파일 이름 */
+  if (stat(filename, &sbuf) < 0) { // 요청받은 filename을 찾아서 그 파일의 속성을 sbuf에 넘김 
     clienterror(fd, filename, "404", "Not found", "Tiny couldn't find this file");
     return;
   }
 
   if (is_static) { /* Serve static content */
-    if (! (S_ISREG(sbuf.st_mode)) || !(S_IRUSR & sbuf.st_mode)) { // 정규 파일인지 확인
+    if (! (S_ISREG(sbuf.st_mode)) || !(S_IRUSR & sbuf.st_mode)) { // !(정규 파일이다) || !(읽기 권한 있다) (둘 중 하나라도 만족 못하면)
       clienterror(fd, filename, "403", "Forbidden", "Tiny couldn't read the file");
       return;
     }
+    // 읽기 가능한 정적 파일의 filename 확인해보기
+    printf("정적 filename 입니다 %s \n", filename);
+
+    // 정적 서버에 연결식별자, 파일명, 해당 파일 사이즈 보냄
     serve_static(fd, filename, sbuf.st_size);
   }
   else { /* Serve dynamic content */
-    if (!(S_ISREG(sbuf.st_mode)) || !(S_IXUSR & sbuf.st_mode)){
+    if (!(S_ISREG(sbuf.st_mode)) || !(S_IXUSR & sbuf.st_mode)){ // !(정규 파일이다) || !(실행 권한 있다) (둘 중 하나라도 만족 못하면)
       clienterror(fd, filename, "403", "Forbidden", "Tiny couldn't run the CGI program");
       return;
     }
-    serve_dynamic(fd, filename, cgiargs); // 동적 서버에 인자를 같이 보냄
+    // 실행 가능한 정적 파일의 filename 확인해보기
+    printf("동적 filename 입니다 %s \n", filename);
+
+    // 동적 서버에 연결식별자, 파일명, 해당 파일 사이즈 보냄
+    serve_dynamic(fd, filename, cgiargs); 
   }
 }
 
+/* HTTP 응답을 응답라인과 응답 본체(HTML)를 서버 소켓을 통해 클라이언트에 보낸다. */
 void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg) {
   
   char buf[MAXLINE], body[MAXBUF];
-
+  
+  /* 응답 본체: 요청한 컨텐츠들이 포함되고 화면에서 볼 수 있음 */
   /* Build the HTTP response body */
-  sprintf(body, "<html><title>Tiny Error</title>");
+  sprintf(body, "<html><title>Tiny Error</title>"); // 출력할 결과값을 변수(body)에 저장하는 함수
   sprintf(body, "%s<body bgcolor=""ffffff"">\r\n", body);
   sprintf(body, "%s%s: %s\r\n", body, errnum, shortmsg);
   sprintf(body, "%s<p>%s: %s\r\n", body, longmsg, cause);
   sprintf(body, "%s<hr><em>The Tiny Web server</em>\r\n", body);
 
+  /* 응답 헤더: 클라이언트는 개발자 도구로 들어가면 볼 수 있음 */
   /* Print the HTTP response */
   sprintf(buf, "HTTP/1.0 %s %s\r\n", errnum, shortmsg);
-  Rio_writen(fd, buf, strlen(buf));
+  Rio_writen(fd, buf, strlen(buf)); // buf에 있는 값이 fd로 써짐 (파일이 수정됨)
   sprintf(buf, "Content-type: text/html\r\n");
   Rio_writen(fd, buf, strlen(buf));
   sprintf(buf, "Content-length: %d\r\n\r\n", (int)strlen(body));
-  Rio_writen(fd, buf, strlen(buf));
+  Rio_writen(fd, buf, strlen(buf)); 
+
+  /* HTML 컨텐츠로 담은 body가 fd로 써짐 -> HTML 수정됨 */
   Rio_writen(fd, body, strlen(body));
 
 }
@@ -171,12 +190,24 @@ void read_requesthdrs(rio_t *rp) {
 int parse_uri(char *uri, char *filename, char *cgiargs) {
   char *ptr;
 
+  /* uri에 cgi-bin이 없다면, 즉 정적 컨텐츠를 요청한다면 1을 리턴한다.*/
   if (!strstr(uri, "cgi-bin")) { /* Static Content */
     // strstr(str1, str2);
     // str1에서 str2와 일치하는 문자열이 있는지 확인 -> 일치하는 문자열이 있으면 해당 위치의 포인터(char*) 반환
-    strcpy(cgiargs, ""); // cgiargs를 ""로 만듦
-    strcpy(filename, ".");
-    strcat(filename, uri); // uri를 filename에 연결
+    strcpy(cgiargs, ""); // 정적이니까 cgiargs는 아무것도 없다.
+    strcpy(filename, "."); // 현재경로에서부터 시작 ./path ~~
+    strcat(filename, uri); // filename에 uri를 연결
+
+    /* 예시
+      uri : /godzilla.jpg
+      ->
+      cgiargs : 
+      filename : ./godzilla.jpg
+    */
+
+    // 만약 uri뒤에 '/'이 있다면 그 뒤에 home.html을 붙인다.
+    // 내가 브라우저에 http://localhost:8000만 입력하면 바로 뒤에 '/'이 생기는데,
+    // '/' 뒤에 home.html을 붙여 해당 위치 해당 이름의 정적 컨텐츠가 출력
     if (uri[strlen(uri)-1] == '/') {
       strcat(filename, "home.html"); // home.html을 filename에 연결
     }
@@ -185,47 +216,66 @@ int parse_uri(char *uri, char *filename, char *cgiargs) {
     return 1;
   }
   else { /* Dynamic Content */
-    ptr = index(uri, '?');
+    ptr = index(uri, '?'); // uri 중 ?가 있는 인덱스를 ptr에 넣어줌
+
+    // '?'가 있으면 cgiargs를 '?' 뒤 인자들과 값으로 채워주고 ?를 NULL로 만든다.
     if (ptr) {
-      strcpy(cgiargs, ptr+1);
+      strcpy(cgiargs, ptr+1); // 뒤에 있는 문자열 전체를 앞에 있는 변수로 복사하는 함수
       *ptr = '\0';
     }
-    else {
+    else { // '?'가 없으면 그냥 아무것도 안 넣어준다.
       strcpy(cgiargs, "");
     }
-    strcpy(filename, ".");
-    strcat(filename, uri);
+    strcpy(filename, "."); // 현재 디렉토리에서 시작
+    strcat(filename, uri); // uri 넣어준다.
+
+    /* 예시
+      uri : /cgi-bin/adder?123&123
+      ->
+      cgiargs : 123&123
+      filename : ./cgi-bin/adder
+    */
+
     return 0;
   }
 }
 
+/*
+* 클라이언트가 원하는 정적 컨텐츠 디렉토리를 받아온다. 
+* 응답 라인과 헤더를 작성하고 서버에게 보낸다. 
+* 그 후 정적 컨텐츠 파일을 읽어 그 응답 본체를 클라이언트에 보낸다.
+*/
 void serve_static(int fd, char *filename, int filesize) {
   int srcfd;
   char *srcp, filetype[MAXLINE], buf[MAXBUF];
 
-  /* Send response headers to client */
-  get_filetype(filename, filetype);
-  sprintf(buf, "HTTP/1.0 200 OK\r\n"); // 출력할 결과 값을 변수(buf)에 저장하는 함수
-  sprintf(buf, "%sServer: Tiny Web Server\r\n", buf);
+  /* Send response headers to client 클라이언트에게 응답 헤더 보내기*/
+  /* 응답 라인과 헤더 작성 */
+  get_filetype(filename, filetype); // 파일 타입 찾아오는 함수 호출
+  sprintf(buf, "HTTP/1.0 200 OK\r\n"); // 출력할 결과값을 변수(buf)에 저장하는 함수 // 응답 라인 작성
+  sprintf(buf, "%sServer: Tiny Web Server\r\n", buf); // 응답 헤더 작성
   sprintf(buf, "%sConnection: close\r\n", buf);
   sprintf(buf, "%sContent-length: %d\r\n", buf, filesize);
   sprintf(buf, "%sContent-type: %s\r\n\r\n", buf, filetype);
-  Rio_writen(fd, buf, strlen(buf)); // buf에 있는 값이 fd로 써짐 (파일이 수정됨)
-  printf("Response headers:\n");
-  printf("%s", buf);
 
-  /* Send response body to client */
-  srcfd = Open(filename, O_RDONLY, 0);
-  srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0);
-  Close(srcfd);
-  Rio_writen(fd, srcp, filesize);
-  Munmap(srcp, filesize);
+  /* 응답 라인과 헤더를 클라이언트에게 보냄 */
+  Rio_writen(fd, buf, strlen(buf)); // buf에 있는 응답 라인과 헤더가 fd로 써짐 (파일이 수정되어 클라이언트가 받음)
+  printf("Response headers:\n");
+  printf("%s", buf); // 커멘드 창에 buf의 내용 프린트
+
+  /* 응답 바디를 클라이언트에게 보냄 */
+  srcfd = Open(filename, O_RDONLY, 0); // filename의 이름을 갖는 파일을 읽기 권한으로 불러온다.
+  srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0); // 메모리에 파일 내용을 동적할당한다.
+  Close(srcfd); // 열어줬던 파일을 닫음
+  Rio_writen(fd, srcp, filesize); // 메모리 동적할당 된 파일 내용을 fd에 써줌 (클라이언트가 응답 바디 볼 수 있음)
+  Munmap(srcp, filesize); // mmap 함수로 매핑해준 메모리 영역을 해제해줌
 }
 
 /* get_filetype - Derive file type from filename */
+// filename을 조사해 웹 서버에서 읽을 수 있는 각각의 식별자에 맞는 MIME 타입을 filetype에 입력해준다.
 void get_filetype(char *filename, char *filetype) {
-    if (strstr(filename, ".html"))
-        strcpy(filetype, "text/html");
+    if (strstr(filename, ".html")) // 브라우저 클라이언트한테 요청 받은 것
+        strcpy(filetype, "text/html"); // 웹 서버에서 읽을 수 있는 MIME 타입으로 넣어줌
     else if (strstr(filename, ".gif"))
         strcpy(filetype, "image/gif");
     else if (strstr(filename, ".png"))
@@ -240,36 +290,44 @@ void get_filetype(char *filename, char *filetype) {
         strcpy(filetype, "text/plain");
 }
 
-void serve_dynamic(int fd, char *filename, char *cgiargs) { // fd: 클라이언트 식별자, filename: uri의 파일경로 (별칭), cgiargs: 쿼리스트링
+/*
+* 클라이언트가 원하는 동적 컨텐츠 디렉토리를 받아온다. 
+* 응답 라인과 헤더를 작성하고 서버에게 보낸다. 
+* CGI 자식 프로세스를 fork하고 그 프로세스의 표준 출력을 클라이언트 출력과 연결한다.
+*/
+void serve_dynamic(int fd, char *filename, char *cgiargs) {
+    // fd: 연결 식별자, filename: uri의 파일경로 (별칭), cgiargs: 쿼리스트링
     char buf[MAXLINE], *emptylist[] = {NULL};
 
+    // 서버가 GET /cgi-bin/adder?15000&213 HTTP/1.1 과 같은 요청을 받음
+
     /* Return first part of HTTP response */
-    sprintf(buf, "HTTP/1.0 200 OK\r\n"); // 버퍼 뒤에 붙임
-    Rio_writen(fd, buf, strlen(buf)); // 버퍼에서 꺼내서 클라이언트 식별자 file에 써줌
+    /* Send response headers to client 클라이언트에게 응답 헤더 보내기*/
+    /* 응답 라인과 헤더 작성 */
+    sprintf(buf, "HTTP/1.0 200 OK\r\n"); // 버퍼에 넣음
+    Rio_writen(fd, buf, strlen(buf)); // 버퍼에서 꺼내서 클라이언트 fd에 수정해줌
     sprintf(buf, "Server: Tiny Web Server\r\n"); 
     Rio_writen(fd, buf, strlen(buf)); 
 
-    // 서버가 GET /cgi-bin/adder?15000&213 HTTP/1.1 과 같은 요청을 받은 후에
-
-    // 자식 프로세스 생성, 이 아래 내용은 각각 실행 자식만 조건문 안 실행
+    // 자식 프로세스 생성, 실행 자식만 조건문 실행 (반환값이 0이면 자식 프로세스)
+    // Fork() 실행 시 실행하면 부모 프로세스와 자식 프로세스가 동시에 실행됨
     if (Fork() == 0) 
-    /* Real server would set all CGI vars here */
     {
-        // 자식 프로세스는 CGI 환경변수 QUERY_STRING을 "15000&213"으로 설정해줌
-        // adder 프로그램은 런 타임에 리눅스 getenv()로 이 값을 참조 가능
-        setenv("QUERY_STRING", cgiargs, 1); // a=1&b=1
-
+        // 자식 프로세스의 CGI 환경변수 QUERY_STRING을 "15000&213"으로 설정해줌
         // 1이면 원래 있던거 지우고 다시 넣기
-        // 파일 복사하기
-        // 표준 출력이 fd에 저장되게 만드는 듯
-        // 원래는 STDOUT_FILENO -> 1 임. 표준 파일 식별자.
+        // adder 프로그램은 런 타임에 리눅스 getenv()로 이 값을 참조 가능
+        setenv("QUERY_STRING", cgiargs, 1); // 10&20
+
+        // fd에 stdout 넣기 (표준 출력이 fd에 저장되게 만드는 것)
+        // adder에서 fflush로 stdout만 출력하고 끝날 게 아니라, 
+        // fd에 있는 데이터를 수정해줘야 하므로 stdout을 fd에 저장되게 만듦
         Dup2(fd, STDOUT_FILENO); /* Redirect stdout to client */
         // 자식은 자식의 표준 출력을 연결 파일 식별자로 재지정
-        // 파일 네임의 실행 코드를 가지고 와서 실행,
-        // 즉 자식 프로세스에는 기존 기능이 전부 없어지고 파일이 실행되는 것임.
 
-        // /cgi-bin/adder 프로그램을 자식의 컨텍스트에서 실행
+        // filename을 찾아서 /cgi-bin/adder 프로그램을 자식의 컨텍스트에서 실행
+        // environ에 환경변수들 담겨 있음
+        // emptylist는 변수 개수 맞춰주려고 넣어준 임의의 빈 배열
         Execve(filename, emptylist, environ); /* Run CGI program */
     }
-    Wait(NULL); // 자식 끝날때까지 기다림
+    Wait(NULL); // 부모 프로세스가 자식 프로세스 끝날때까지 기다림
 }
