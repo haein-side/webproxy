@@ -21,9 +21,9 @@
 void doit(int fd);
 void read_requesthdrs(rio_t *rp);
 int parse_uri(char *uri, char *filename, char *cgiargs);
-void serve_static(int fd, char *filename, int filesize);
+void serve_static(int fd, char *filename, int filesize, char *method);
 void get_filetype(char *filename, char *filetype);
-void serve_dynamic(int fd, char *filename, char *cgiargs);
+void serve_dynamic(int fd, char *filename, char *cgiargs, char *method);
 void clienterror(int fd, char *cause, char *errnum, char *shortmsg,
                  char *longmsg);
 
@@ -101,8 +101,8 @@ void doit(int fd) {
   printf("%s", buf); // 요청 라인 buf = "GET /godzilla.gif HTTP/1.1\0"을 표준 출력만 해줌!
   sscanf(buf, "%s %s %s", method, uri, version); // buf에서 포멧을 지정하여 읽어옴
 
-  /* 요청 method가 GET이 아니면 종료. main으로 가서 연결 닫고 다음 요청 기다림 */
-  if (strcasecmp(method, "GET")) { // 대소문자를 구분하지 않고 스트링 비교
+  /* 요청 method가 GET이나 HTTP가 아니면 종료. main으로 가서 연결 닫고 다음 요청 기다림 */
+  if (!(strcasecmp(method, "GET") || strcasecmp(method, "HTTP"))) { // 대소문자를 구분하지 않고 스트링 비교
     clienterror(fd, method, "501", "Not implemented", "Tiny does not implement this method");
     return;
   }
@@ -132,7 +132,7 @@ void doit(int fd) {
     printf("정적 filename 입니다 %s \n", filename);
 
     // 정적 서버에 연결식별자, 파일명, 해당 파일 사이즈 보냄
-    serve_static(fd, filename, sbuf.st_size);
+    serve_static(fd, filename, sbuf.st_size, method);
   }
   else { /* Serve dynamic content */
     if (!(S_ISREG(sbuf.st_mode)) || !(S_IXUSR & sbuf.st_mode)){ // !(정규 파일이다) || !(실행 권한 있다) (둘 중 하나라도 만족 못하면)
@@ -143,7 +143,7 @@ void doit(int fd) {
     printf("동적 filename 입니다 %s \n", filename);
 
     // 동적 서버에 연결식별자, 파일명, 해당 파일 사이즈 보냄
-    serve_dynamic(fd, filename, cgiargs); 
+    serve_dynamic(fd, filename, cgiargs, method); 
   }
 }
 
@@ -245,9 +245,12 @@ int parse_uri(char *uri, char *filename, char *cgiargs) {
 * 응답 라인과 헤더를 작성하고 서버에게 보낸다. 
 * 그 후 정적 컨텐츠 파일을 읽어 그 응답 본체를 클라이언트에 보낸다.
 */
-void serve_static(int fd, char *filename, int filesize) {
+void serve_static(int fd, char *filename, int filesize, char *method) {
   int srcfd;
   char *srcp, filetype[MAXLINE], buf[MAXBUF];
+  rio_t file_rio;
+  int n;
+  char *file;
 
   /* Send response headers to client 클라이언트에게 응답 헤더 보내기*/
   /* 응답 라인과 헤더 작성 */
@@ -263,12 +266,34 @@ void serve_static(int fd, char *filename, int filesize) {
   printf("Response headers:\n");
   printf("%s", buf); // 커멘드 창에 buf의 내용 프린트
 
-  /* 응답 바디를 클라이언트에게 보냄 */
-  srcfd = Open(filename, O_RDONLY, 0); // filename의 이름을 갖는 파일을 읽기 권한으로 불러온다.
-  srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0); // 메모리에 파일 내용을 동적할당한다.
-  Close(srcfd); // 열어줬던 파일을 닫음
-  Rio_writen(fd, srcp, filesize); // 메모리 동적할당 된 파일 내용을 fd에 써줌 (클라이언트가 응답 바디 볼 수 있음)
-  Munmap(srcp, filesize); // mmap 함수로 매핑해준 메모리 영역을 해제해줌
+  // /* 응답 바디를 클라이언트에게 보냄 */
+  // srcfd = Open(filename, O_RDONLY, 0); // filename의 이름을 갖는 파일을 읽기 권한으로 불러온다.
+  // srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0); // 메모리에 파일 내용을 동적할당한다.
+  // Close(srcfd); // 열어줬던 파일을 닫음
+  // Rio_writen(fd, srcp, filesize); // 메모리 동적할당된 파일 내용을 fd에 써줌 (클라이언트가 응답 바디 볼 수 있음)
+  // Munmap(srcp, filesize); // mmap 함수로 매핑해준 메모리 영역을 해제해줌
+  
+  /* 만약 메서드가 HEAD라면, 응답 바디를 만들지 않고 끝낸다.*/
+  if (strcasecmp(method, "HEAD") == 0){
+    return;
+  }
+
+  /* 메서드가 GET이면 응답 바디를 만들고 클라이언트에게 보내줌 */
+  // 읽을 수 있는 파일로 열기
+  srcfd = Open(filename, O_RDONLY, 0);
+  // 파일을 어떤 메모리 공간에 대응시키고 첫주소를 리턴
+  // srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0);
+  file = (char *)malloc(filesize); // filesize만큼 공간 할당
+  Rio_readinitb(&file_rio, srcfd); // srcfd 파일을 file_rio에 연결해줌
+  Rio_readnb(&file_rio, file, filesize); // file_rio에 있는 걸 file에 한 줄씩 복사해줌
+  Rio_writen(fd, file, filesize); // file(메모리)에 있는 값이 fd로 써져서 클라이언트에 보냄 (클라이언트가 응답 바디 볼 수 있음)
+  Close(srcfd);
+  free(file);
+  //대응시킨 녀석을 풀어준다. 유효하지 않은 메모리로 만듦
+  // void *mmap(void *start, size_t length, int prot, int flags, int fd, off_t offset);
+  // int munmap(void *start, size_t length);
+  // Munmap(srcp, filesize);
+
 }
 
 /* get_filetype - Derive file type from filename */
@@ -290,12 +315,13 @@ void get_filetype(char *filename, char *filetype) {
         strcpy(filetype, "text/plain");
 }
 
+
 /*
 * 클라이언트가 원하는 동적 컨텐츠 디렉토리를 받아온다. 
 * 응답 라인과 헤더를 작성하고 서버에게 보낸다. 
 * CGI 자식 프로세스를 fork하고 그 프로세스의 표준 출력을 클라이언트 출력과 연결한다.
 */
-void serve_dynamic(int fd, char *filename, char *cgiargs) {
+void serve_dynamic(int fd, char *filename, char *cgiargs, char *method) {
     // fd: 연결 식별자, filename: uri의 파일경로 (별칭), cgiargs: 쿼리스트링
     char buf[MAXLINE], *emptylist[] = {NULL};
 
@@ -317,6 +343,9 @@ void serve_dynamic(int fd, char *filename, char *cgiargs) {
         // 1이면 원래 있던거 지우고 다시 넣기
         // adder 프로그램은 런 타임에 리눅스 getenv()로 이 값을 참조 가능
         setenv("QUERY_STRING", cgiargs, 1); // 10&20
+
+        /* 요청 메서드를 환경변수에 추가한다. */
+        setenv("REQUEST_METHOD", method, 1);
 
         // fd에 stdout 넣기 (표준 출력이 fd에 저장되게 만드는 것)
         // adder에서 fflush로 stdout만 출력하고 끝날 게 아니라, 
