@@ -27,7 +27,9 @@ void serve_dynamic(int fd, char *filename, char *cgiargs);
 void clienterror(int fd, char *cause, char *errnum, char *shortmsg,
                  char *longmsg);
 
+/* 반복실행 "서버"로 명령줄에서 넘겨받은 포트로의 연결 요청을 들음 */
 /* port 번호를 인자로 받아 클라이언트의 요청이 올 때마다 새로 연결 소켓을 만들어 doit() 함수를 호출한다. */
+/* 연결요청을 받을 준비가 된 듣기 식별자를 생성하고 클라이언트와 서버를 */
 int main(int argc, char **argv) {
   /*
   * argc: 메인 함수에 전달 되는 데이터의 수
@@ -37,6 +39,7 @@ int main(int argc, char **argv) {
   // 듣기식별자: 클라이언트로부터의 연결 요청 승낙 가능 상태 시 생성됨
   // 연결식별자: 서버가 연결 요청을 수락할 때마다 생성되고, 서버가 클라이언트에 서비스 하는 동안에만 존재
   char hostname[MAXLINE], port[MAXLINE];
+  // hostname: 접속한 클라이언트 ip, port: 접속한 클라이언트 port 
   socklen_t clientlen;
   struct sockaddr_storage clientaddr; // 클라이언트에서 연결 요청을 보내면 알 수 있는 클라이언트 연결 소켓 주소
 
@@ -95,14 +98,18 @@ void doit(int fd) {
   Rio_readinitb(&rio, fd); // fd의 내용을 rio 구조체에 초기화. rio 안의 내부 버퍼와 fd(서버의 connfd) 연결
   Rio_readlineb(&rio, buf, MAXLINE); //  rio(==connfd)에 있는 string 한 줄(응답 라인)을 읽고 buf로 옮김
 
-  /* 사용자 버퍼인 buf에 connfd의 값들이 들어간 것 */
+  // 사용자가 GET / HTTP/1.0을 입력해줬을 때의 상태.. port번호는 어디서 입력해줬나?
+  // fd에 담겨있는 건 사용자가 입력한 GET / HTTP/1.0이 유일?
+
+  /* 사용자 버퍼인 buf에 응답 라인이 들어간 것 */
 
   printf("Request headers:\n");
   printf("%s", buf); // 요청 라인 buf = "GET /godzilla.gif HTTP/1.1\0"을 표준 출력만 해줌!
   sscanf(buf, "%s %s %s", method, uri, version); // buf에서 포멧을 지정하여 읽어옴
 
   /* 요청 method가 GET이 아니면 종료. main으로 가서 연결 닫고 다음 요청 기다림 */
-  if (strcasecmp(method, "GET")) { // 대소문자를 구분하지 않고 스트링 비교
+  // 같으면 0이므로 안에 실행하지 않음 -> 다를 때만 실행됨
+  if (strcasecmp(method, "GET")) { // 대소문자를 구분하지 않고 스트링 비교 -> 같으면 0 리턴 // 0 보다 작으면 string1 < string2
     clienterror(fd, method, "501", "Not implemented", "Tiny does not implement this method");
     return;
   }
@@ -129,9 +136,10 @@ void doit(int fd) {
       return;
     }
     // 읽기 가능한 정적 파일의 filename 확인해보기
-    printf("정적 filename 입니다 %s \n", filename);
+    // printf("정적 filename 입니다 %s \n", filename);
 
     // 정적 서버에 연결식별자, 파일명, 해당 파일 사이즈 보냄
+    // fd를 제외하고 모두 NULL인 상태
     serve_static(fd, filename, sbuf.st_size);
   }
   else { /* Serve dynamic content */
@@ -140,9 +148,10 @@ void doit(int fd) {
       return;
     }
     // 실행 가능한 정적 파일의 filename 확인해보기
-    printf("동적 filename 입니다 %s \n", filename);
+    // printf("동적 filename 입니다 %s \n", filename);
 
     // 동적 서버에 연결식별자, 파일명, 해당 파일 사이즈 보냄
+    // fd를 제외하고 모두 NULL인 상태
     serve_dynamic(fd, filename, cgiargs); 
   }
 }
@@ -174,7 +183,7 @@ void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longms
 
 }
 
-/* 클라이언트가 버퍼 rp에 보낸 나머지 요청 헤더들을 그냥 프린트한다 */
+/* 클라이언트가 버퍼 rp에 보낸 요청 라인을 제외한 나머지 요청 헤더들을 그냥 프린트한다 */
 void read_requesthdrs(rio_t *rp) {
   char buf[MAXLINE];
 

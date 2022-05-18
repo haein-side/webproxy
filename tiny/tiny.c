@@ -40,10 +40,10 @@ int main(int argc, char **argv) {
   socklen_t clientlen;
   struct sockaddr_storage clientaddr; // 클라이언트에서 연결 요청을 보내면 알 수 있는 클라이언트 연결 소켓 주소
 
-  /* Check command line args */
-  if (argc != 2) { // 한 개의 인자만을 명령어로 받음
+  // 인자 2개 받아야 함
+  if (argc != 2) { 
     fprintf(stderr, "usage: %s <port>\n", argv[0]);
-    exit(1);
+    exit(1); // 에러메시지 종료
   }
 
   /* 해당 포트 번호에 해당하는 듣기 소켓 식별자를 열어줌 */
@@ -129,7 +129,7 @@ void doit(int fd) {
       return;
     }
     // 읽기 가능한 정적 파일의 filename 확인해보기
-    printf("정적 filename 입니다 %s \n", filename);
+    // printf("정적 filename 입니다 %s \n", filename);
 
     // 정적 서버에 연결식별자, 파일명, 해당 파일 사이즈 보냄
     serve_static(fd, filename, sbuf.st_size, method);
@@ -140,7 +140,7 @@ void doit(int fd) {
       return;
     }
     // 실행 가능한 정적 파일의 filename 확인해보기
-    printf("동적 filename 입니다 %s \n", filename);
+    // printf("동적 filename 입니다 %s \n", filename);
 
     // 동적 서버에 연결식별자, 파일명, 해당 파일 사이즈 보냄
     serve_dynamic(fd, filename, cgiargs, method); 
